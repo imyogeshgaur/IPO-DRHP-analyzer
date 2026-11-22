@@ -90,7 +90,7 @@ export function ReportInsightView(props: {
   );
 }
 
-function FinancialsView(props: {
+export function FinancialsView(props: {
   data: FinancialsInsightData;
   colors: ChartPalette;
 }) {
@@ -203,7 +203,7 @@ function FinancialsView(props: {
   );
 }
 
-function RisksView(props: { data: RisksInsightData; colors: ChartPalette }) {
+export function RisksView(props: { data: RisksInsightData; colors: ChartPalette }) {
   const { data, colors } = props;
   const [severityFilter, setSeverityFilter] = useState<RiskSeverity | "all">(
     "all",
@@ -437,7 +437,7 @@ function RisksView(props: { data: RisksInsightData; colors: ChartPalette }) {
   );
 }
 
-function OverviewView(props: {
+export function OverviewView(props: {
   data: OverviewInsightData;
   colors: ChartPalette;
 }) {
@@ -494,7 +494,7 @@ function OverviewView(props: {
   );
 }
 
-function IpoView(props: { data: IpoInsightData; colors: ChartPalette }) {
+export function IpoView(props: { data: IpoInsightData; colors: ChartPalette }) {
   const { data, colors } = props;
   const snapshotCards: KpiMetric[] = [
     {
@@ -646,7 +646,7 @@ function IpoView(props: { data: IpoInsightData; colors: ChartPalette }) {
   );
 }
 
-function KpiGrid(props: { items: KpiMetric[]; colors: ChartPalette }) {
+export function KpiGrid(props: { items: KpiMetric[]; colors: ChartPalette }) {
   const { items, colors } = props;
   return (
     <View style={styles.kpiGrid}>
@@ -699,7 +699,7 @@ function KpiGrid(props: { items: KpiMetric[]; colors: ChartPalette }) {
   );
 }
 
-function CitedBulletCard(props: {
+export function CitedBulletCard(props: {
   title: string;
   items: CitedTextItem[];
   accentColor: string;
@@ -746,7 +746,7 @@ function CitedBulletCard(props: {
   );
 }
 
-function CollapsibleSources(props: {
+export function CollapsibleSources(props: {
   citations: Citation[];
   colors: ChartPalette;
 }) {
