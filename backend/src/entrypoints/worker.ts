@@ -1,17 +1,23 @@
 import { config } from "../config/config.js";
 import { FileStorage, IngestionService } from "../services/ingestion.js";
+import { DrhpInsightsService } from "../services/insights.js";
 import { RagDatabase } from "../infrastructure/mongo.js";
-import { OllamaClient } from "../infrastructure/ollama.js";
+import { createModelClient } from "../infrastructure/model-factory.js";
 
 const database = await RagDatabase.connect(
   config.mongoUri,
   config.mongoDatabase,
   config.vectorIndex,
 );
+const model = createModelClient();
+const insights = new DrhpInsightsService(database, model, (event, fields) =>
+  console.info(JSON.stringify({ event, ...fields })),
+);
 const service = new IngestionService(
   database,
-  new OllamaClient(config.ollamaUrl, config.chatModel, config.embeddingModel),
+  model,
   new FileStorage(config.uploadDirectory),
+  insights,
 );
 
 let stopping = false;

@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  assertDrhpChunkLimit,
+  assertDrhpPageLimit,
   chunkDrhpPages,
   detectDrhpSectionHeading,
   detectPrintedPageNumber,
   isLikelyDrhp,
+  MAX_DRHP_CHUNKS,
+  MAX_DRHP_PDF_PAGES,
 } from "./drhp.js";
 import { AppError } from "../shared/errors.js";
 
@@ -97,6 +101,55 @@ test("DRHP chunks retain PDF and printed-page attribution", () => {
     ],
   );
   assert.deepEqual(chunks.map(({ chunkIndex }) => chunkIndex), [0, 1]);
+});
+
+test("DRHP chunks use larger bounded windows to reduce embedding calls", () => {
+  const chunks = chunkDrhpPages([
+    {
+      pdfPageIndex: 4,
+      text: "A".repeat(5_500),
+      needsOcr: false,
+    },
+  ]);
+
+  assert.equal(chunks.length, 2);
+  assert.ok(chunks.every((chunk) => chunk.text.length <= 3_000));
+  assert.ok(chunks.every((chunk) => chunk.pdfPageIndex === 4));
+});
+
+test("DRHP page and chunk limits allow the boundary and reject larger inputs", () => {
+  assert.doesNotThrow(() => assertDrhpPageLimit(MAX_DRHP_PDF_PAGES));
+  assert.throws(
+    () => assertDrhpPageLimit(100_000),
+    (error: unknown) =>
+      error instanceof AppError &&
+      error.code === "DRHP_PAGE_LIMIT_EXCEEDED" &&
+      error.statusCode === 413,
+  );
+  assert.doesNotThrow(() => assertDrhpChunkLimit(MAX_DRHP_CHUNKS));
+  assert.throws(
+    () => assertDrhpChunkLimit(MAX_DRHP_CHUNKS + 1),
+    (error: unknown) =>
+      error instanceof AppError &&
+      error.code === "DRHP_CHUNK_LIMIT_EXCEEDED" &&
+      error.statusCode === 413,
+  );
+});
+
+test("DRHP chunking stops before producing more chunks than the limit", () => {
+  const pages = Array.from({ length: MAX_DRHP_CHUNKS + 1 }, (_, index) => ({
+    pdfPageIndex: index,
+    text: "Readable text.",
+    needsOcr: false,
+  }));
+
+  assert.throws(
+    () => chunkDrhpPages(pages),
+    (error: unknown) =>
+      error instanceof AppError &&
+      error.code === "DRHP_CHUNK_LIMIT_EXCEEDED" &&
+      error.statusCode === 413,
+  );
 });
 
 test("DRHP chunks carry section metadata across page boundaries", () => {

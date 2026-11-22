@@ -2,7 +2,7 @@ import { buildApp } from "../api/app.js";
 import { config } from "../config/config.js";
 import { FileStorage } from "../services/ingestion.js";
 import { RagDatabase } from "../infrastructure/mongo.js";
-import { OllamaClient } from "../infrastructure/ollama.js";
+import { createModelClient } from "../infrastructure/model-factory.js";
 
 const database = await RagDatabase.connect(
   config.mongoUri,
@@ -11,12 +11,8 @@ const database = await RagDatabase.connect(
 );
 const storage = new FileStorage(config.uploadDirectory);
 await storage.initialize();
-const ollama = new OllamaClient(
-  config.ollamaUrl,
-  config.chatModel,
-  config.embeddingModel,
-);
-const app = buildApp({ database, ollama, storage });
+const model = createModelClient();
+const app = buildApp({ database, model, storage });
 
 try {
   await app.listen({ port: config.port, host: config.host });

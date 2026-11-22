@@ -1,0 +1,24 @@
+{
+  "name": "drhp-insight-infra",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=20.19.4"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "synth": "cdk synth",
+    "deploy": "cdk deploy"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.220.0",
+    "constructs": "^10.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "aws-cdk": "^2.220.0",
+    "esbuild": "^0.25.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
+  }
+}

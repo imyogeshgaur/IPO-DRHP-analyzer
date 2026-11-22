@@ -174,7 +174,7 @@ export class QueryService {
     ) {
       throw new AppError(
         "INVALID_EMBEDDING_RESPONSE",
-        "Ollama did not return an embedding for each search query",
+        "The model provider did not return an embedding for each search query",
         502,
       );
     }
@@ -183,7 +183,7 @@ export class QueryService {
     if (!originalQuestionEmbedding) {
       throw new AppError(
         "INVALID_EMBEDDING_RESPONSE",
-        "Ollama returned no embedding for the original question",
+        "The model provider returned no embedding for the original question",
         502,
       );
     }
@@ -202,7 +202,7 @@ export class QueryService {
       if (!embedding) {
         throw new AppError(
           "INVALID_EMBEDDING_RESPONSE",
-          "Ollama returned no embedding for a search query",
+          "The model provider returned no embedding for a search query",
           502,
         );
       }
@@ -237,15 +237,23 @@ export class QueryService {
     const candidateMetadata = removeRedundantChunks(
       [...rankedChunks.values()]
         .sort((left, right) => {
-          const sectionDelta =
-            isDrhpQuery
-              ? drhpSectionPriority(request.question, right.chunk.section) -
-                drhpSectionPriority(request.question, left.chunk.section)
-              : 0;
-          return (
-            sectionDelta ||
-            right.reciprocalRankScore - left.reciprocalRankScore
-          );
+          const leftScore =
+            left.reciprocalRankScore +
+            (isDrhpQuery
+              ? Math.min(
+                  drhpSectionPriority(request.question, left.chunk.section),
+                  1,
+                ) * 0.012
+              : 0);
+          const rightScore =
+            right.reciprocalRankScore +
+            (isDrhpQuery
+              ? Math.min(
+                  drhpSectionPriority(request.question, right.chunk.section),
+                  1,
+                ) * 0.012
+              : 0);
+          return rightScore - leftScore;
         })
         .map(({ chunk }) => chunk),
     ).slice(0, candidateLimit);
@@ -825,7 +833,7 @@ function supportingEvidenceForClaim(
     const sharedTerms = [...claimTerms].filter((term) => chunkTerms.has(term));
     const chunkNumbers = extractNumberTokens(chunk.text);
     const sharedNumbers = [...claimNumbers].filter((number) =>
-      chunkNumbers.has(number),
+      numberMatchesAny(number, chunkNumbers),
     );
     const chunkEntities = extractDrhpEntities(chunk.text);
     const sharedEntities = [...claimEntities].filter((entity) =>
@@ -941,6 +949,23 @@ function extractNumberTokens(text: string): Set<string> {
       number.replace(/,/g, ""),
     ),
   );
+}
+
+function numberMatchesAny(claimNumber: string, chunkNumbers: Set<string>): boolean {
+  if (chunkNumbers.has(claimNumber)) return true;
+  const target = Number(claimNumber);
+  if (!Number.isFinite(target)) return false;
+  // Ignore exact calendar years from fuzzy rounding tolerance
+  if (Number.isInteger(target) && target >= 1900 && target <= 2100) {
+    return false;
+  }
+  const tolerance = Math.max(0.11, Math.abs(target) * 0.005);
+  for (const candidate of chunkNumbers) {
+    const parsed = Number(candidate);
+    if (!Number.isFinite(parsed)) continue;
+    if (Math.abs(parsed - target) <= tolerance) return true;
+  }
+  return false;
 }
 
 function extractDrhpEntities(text: string): Set<string> {

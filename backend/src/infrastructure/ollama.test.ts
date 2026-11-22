@@ -131,3 +131,54 @@ test("DRHP model rejects malformed claim-validation JSON", async (t) => {
       error.code === "INVALID_CHAT_RESPONSE",
   );
 });
+
+test("DRHP model extracts markdown-fenced and prose-wrapped JSON and retries once on malformed JSON", async (t) => {
+  const rawOutputs = [
+    '```json\n{"claims":["Revenue grew in FY25."]}\n```',
+    "{malformed json",
+    'Here is the validation:\n{"validations":[{"claimIndex":0,"evidenceIndexes":[0]}]}\nThanks!',
+  ];
+  let requestCount = 0;
+  const server = createServer((_request, response) => {
+    requestCount += 1;
+    const next = rawOutputs.shift() ?? "";
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ message: { content: next } }));
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  t.after(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      }),
+  );
+
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const client = new OllamaClient(
+    `http://127.0.0.1:${address.port}`,
+    "gemma4:12b-mlx",
+    "nomic-embed-text",
+  );
+  const evidence = [
+    { chunkId: "chunk-1", score: 0.9, text: "Revenue grew in FY25." },
+  ];
+
+  assert.deepEqual(
+    await client.generateGroundedClaims("How did revenue perform?", evidence),
+    { claims: ["Revenue grew in FY25."] },
+  );
+  assert.deepEqual(
+    await client.validateGroundedClaims(
+      "How did revenue perform?",
+      ["Revenue grew in FY25."],
+      evidence,
+    ),
+    [{ claimIndex: 0, evidenceIndexes: [0] }],
+  );
+  assert.equal(requestCount, 3);
+});

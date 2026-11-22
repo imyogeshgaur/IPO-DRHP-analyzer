@@ -3,15 +3,19 @@ import {
   type Collection,
   type Db,
   type Document,
+  type Filter,
 } from "mongodb";
 import type {
+  DocumentInsightResponse,
   DocumentStatus,
   DocumentType,
+  InsightSection,
 } from "../contracts/contracts.js";
 import { AppError } from "../shared/errors.js";
 
 export type DocumentRecord = {
   documentId: string;
+  ownerId?: string;
   filename: string;
   mediaType: string;
   extension: string;
@@ -45,6 +49,24 @@ export type JobRecord = {
   updatedAt: Date;
   leaseUntil?: Date;
 };
+
+export type FeedbackRecord = {
+  feedbackId: string;
+  ownerId: string;
+  documentId: string;
+  questionHash: string;
+  rating: "helpful" | "not_helpful";
+  createdAt: Date;
+};
+
+export type DocumentInsightRecord = {
+  documentId: string;
+  section: InsightSection;
+  payload: DocumentInsightResponse;
+  updatedAt: Date;
+};
+
+export type DocumentChunkSummary = Omit<ChunkRecord, "embedding">;
 
 export type SearchResult = Omit<ChunkRecord, "embedding"> & { score: number };
 export type LexicalSearchResult = Omit<ChunkRecord, "embedding"> & {
@@ -88,14 +110,32 @@ export class RagDatabase {
     return this.db.collection<JobRecord>("ingestion_jobs");
   }
 
+  private get feedback(): Collection<FeedbackRecord> {
+    return this.db.collection<FeedbackRecord>("document_feedback");
+  }
+
+  private get insights(): Collection<DocumentInsightRecord> {
+    return this.db.collection<DocumentInsightRecord>("document_insights");
+  }
+
   private async ensureIndexes(): Promise<void> {
     await Promise.all([
       this.documents.createIndex({ documentId: 1 }, { unique: true }),
+      this.documents.createIndex({ storagePath: 1 }, { unique: true }),
+      this.documents.createIndex({ ownerId: 1, createdAt: -1 }),
       this.chunks.createIndex({ documentId: 1 }),
+      this.chunks.createIndex({ documentId: 1, chunkIndex: 1 }),
       this.chunks.createIndex({ chunkId: 1 }, { unique: true }),
       this.chunks.createIndex({ text: "text" }),
       this.jobs.createIndex({ jobId: 1 }, { unique: true }),
+      this.jobs.createIndex({ documentId: 1 }, { unique: true }),
       this.jobs.createIndex({ status: 1, createdAt: 1 }),
+      this.feedback.createIndex({ feedbackId: 1 }, { unique: true }),
+      this.feedback.createIndex({ ownerId: 1, documentId: 1, createdAt: -1 }),
+      this.insights.createIndex(
+        { documentId: 1, section: 1 },
+        { unique: true },
+      ),
     ]);
   }
 
@@ -122,6 +162,42 @@ export class RagDatabase {
 
   async getDocument(documentId: string): Promise<DocumentRecord | null> {
     return this.documents.findOne({ documentId });
+  }
+
+  async getDocumentByStoragePath(
+    storagePath: string,
+  ): Promise<DocumentRecord | null> {
+    return this.documents.findOne({ storagePath });
+  }
+
+  async listDocuments(
+    ownerId: string,
+    limit: number,
+  ): Promise<DocumentRecord[]> {
+    return this.documents
+      .find(ownerFilter(ownerId))
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .toArray();
+  }
+
+  async listDocumentIds(ownerId: string): Promise<string[]> {
+    const documents = await this.documents
+      .find(ownerFilter(ownerId), {
+        projection: { _id: 0, documentId: 1 },
+      })
+      .toArray();
+    return documents.map((document) => document.documentId);
+  }
+
+  async getDocumentForOwner(
+    documentId: string,
+    ownerId: string,
+  ): Promise<DocumentRecord | null> {
+    return this.documents.findOne({
+      documentId,
+      ...ownerFilter(ownerId),
+    });
   }
 
   async getDocumentTypes(
@@ -157,13 +233,75 @@ export class RagDatabase {
     await this.documents.updateOne({ documentId }, { $set: update });
   }
 
-  async deleteDocument(documentId: string): Promise<DocumentRecord | null> {
-    const document = await this.documents.findOneAndDelete({ documentId });
-    await Promise.all([
-      this.chunks.deleteMany({ documentId }),
-      this.jobs.deleteMany({ documentId }),
-    ]);
+  async deleteDocument(
+    documentId: string,
+    ownerId: string,
+  ): Promise<DocumentRecord | null> {
+    const document = await this.documents.findOneAndDelete({
+      documentId,
+      ...ownerFilter(ownerId),
+    });
+    if (document) {
+      await Promise.all([
+        this.chunks.deleteMany({ documentId }),
+        this.jobs.deleteMany({ documentId }),
+        this.feedback.deleteMany({ documentId }),
+        this.insights.deleteMany({ documentId }),
+      ]);
+    }
     return document;
+  }
+
+  async createFeedback(feedback: FeedbackRecord): Promise<void> {
+    await this.feedback.insertOne(feedback);
+  }
+
+  async getInsight(
+    documentId: string,
+    section: InsightSection,
+  ): Promise<DocumentInsightRecord | null> {
+    return this.insights.findOne({ documentId, section });
+  }
+
+  async upsertInsight(record: DocumentInsightRecord): Promise<void> {
+    await this.insights.updateOne(
+      { documentId: record.documentId, section: record.section },
+      { $set: record },
+      { upsert: true },
+    );
+  }
+
+  async deleteInsightsForDocument(documentId: string): Promise<void> {
+    await this.insights.deleteMany({ documentId });
+  }
+
+  async findChunksByDocument(
+    documentId: string,
+    options: {
+      sectionRegex?: string;
+      textRegex?: string;
+      limit?: number;
+    } = {},
+  ): Promise<DocumentChunkSummary[]> {
+    const filter: Filter<ChunkRecord> = { documentId };
+    if (options.sectionRegex) {
+      filter.section = { $regex: options.sectionRegex, $options: "i" };
+    }
+    if (options.textRegex) {
+      filter.text = { $regex: options.textRegex, $options: "i" };
+    }
+    const cursor = this.chunks
+      .find(filter, {
+        projection: {
+          _id: 0,
+          embedding: 0,
+        },
+      })
+      .sort({ chunkIndex: 1, pdfPageIndex: 1 });
+    if (options.limit !== undefined) {
+      cursor.limit(options.limit);
+    }
+    return cursor.toArray();
   }
 
   async claimNextJob(): Promise<JobRecord | null> {
@@ -184,6 +322,40 @@ export class RagDatabase {
         $inc: { attempts: 1 },
       },
       { sort: { createdAt: 1 }, returnDocument: "after" },
+    );
+  }
+
+  async claimJobForDocument(
+    documentId: string,
+  ): Promise<JobRecord | null> {
+    const now = new Date();
+    return this.jobs.findOneAndUpdate(
+      {
+        documentId,
+        $or: [
+          { status: "queued" },
+          { status: "processing", leaseUntil: { $lt: now } },
+        ],
+      },
+      {
+        $set: {
+          status: "processing",
+          updatedAt: now,
+          leaseUntil: new Date(now.getTime() + 5 * 60_000),
+        },
+        $inc: { attempts: 1 },
+      },
+      { returnDocument: "after" },
+    );
+  }
+
+  async retryJob(jobId: string): Promise<void> {
+    await this.jobs.updateOne(
+      { jobId, status: "processing" },
+      {
+        $set: { status: "queued", updatedAt: new Date() },
+        $unset: { leaseUntil: "" },
+      },
     );
   }
 
@@ -220,8 +392,23 @@ export class RagDatabase {
   }
 
   async replaceChunks(documentId: string, chunks: ChunkRecord[]): Promise<void> {
-    await this.chunks.deleteMany({ documentId });
-    if (chunks.length > 0) await this.chunks.insertMany(chunks);
+    const newChunkIds = chunks.map((chunk) => chunk.chunkId);
+    try {
+      if (chunks.length > 0) await this.chunks.insertMany(chunks);
+    } catch (error) {
+      if (newChunkIds.length > 0) {
+        await this.chunks.deleteMany({
+          documentId,
+          chunkId: { $in: newChunkIds },
+        });
+      }
+      throw error;
+    }
+    await this.chunks.deleteMany({
+      documentId,
+      ...(newChunkIds.length > 0 ? { chunkId: { $nin: newChunkIds } } : {}),
+    });
+    await this.insights.deleteMany({ documentId });
   }
 
   async searchChunks(
@@ -344,6 +531,15 @@ export class RagDatabase {
       .sort((left, right) => right.score - left.score)
       .slice(0, topK);
   }
+}
+
+function ownerFilter(ownerId: string): Filter<DocumentRecord> {
+  if (ownerId === "local") {
+    return {
+      $or: [{ ownerId }, { ownerId: { $exists: false } }],
+    };
+  }
+  return { ownerId };
 }
 
 function searchResultFromChunk(

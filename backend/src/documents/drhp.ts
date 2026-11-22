@@ -19,6 +19,11 @@ export type DrhpChunk = {
   section?: string;
 };
 
+export const MAX_DRHP_PDF_PAGES = 1_000;
+export const MAX_DRHP_CHUNKS = 2_000;
+const DRHP_CHUNK_MAX_CHARACTERS = 3_000;
+const DRHP_CHUNK_OVERLAP_CHARACTERS = 250;
+
 type PdfTextItem = {
   str: string;
   x?: number;
@@ -90,9 +95,14 @@ export function detectPrintedPageNumber(text: string): string | undefined {
 const knownDrhpHeadings = [
   "about our company",
   "basis for issue price",
+  "basis for offer price",
   "capital structure",
+  "capitalisation statement",
   "definitions and abbreviations",
+  "external risk factors",
+  "financial indebtedness",
   "financial information",
+  "financial statements",
   "general",
   "general information",
   "general risk factors",
@@ -100,14 +110,18 @@ const knownDrhpHeadings = [
   "general terms",
   "government and other approvals",
   "industry overview",
+  "internal risk factors",
   "introduction",
   "issue procedure",
+  "key performance indicators",
   "legal and other information",
   "management's discussion and analysis",
   "managements discussion and analysis",
   "material contracts and documents for inspection",
   "objects of the issue",
   "objects of the offer",
+  "offer document summary",
+  "other financial information",
   "other regulatory and statutory disclosures",
   "outstanding litigations and material developments",
   "our business",
@@ -115,18 +129,28 @@ const knownDrhpHeadings = [
   "our management",
   "our company",
   "our promoters and promoter group",
+  "restated consolidated financial information",
+  "restated consolidated financial statements",
   "restated financial information",
+  "restated financial statements",
   "risk factors",
+  "statement of financial indebtedness",
   "summary financial information",
   "summary of financial information",
   "summary of the offer",
   "summary of the offer document",
+  "summary of restated consolidated balance sheet",
+  "summary of restated consolidated cash flows",
   "summary of restated consolidated financial information",
   "summary of restated consolidated profit and loss",
+  "summary of restated consolidated statement of assets and liabilities",
+  "summary of restated consolidated statement of profit and loss",
   "summary of restated financial information",
   "summary of restated profit and loss",
+  "the issue",
   "the offer",
   "terms of the issue",
+  "terms of the offer",
 ] as const;
 
 export function detectDrhpSectionHeading(line: string): string | undefined {
@@ -173,8 +197,13 @@ export function detectDrhpSectionHeading(line: string): string | undefined {
 export async function parseDrhpPdf(
   filePath: string,
 ): Promise<{ mediaType: "application/pdf"; pages: DrhpPdfPage[] }> {
+  const pdfData = await readFile(filePath);
+  const metadata = await pdfParse(pdfData, { max: 1 });
+  assertDrhpPageLimit(metadata.numpages);
+
   const pages = new Map<number, DrhpPdfPage>();
-  const parsed = await pdfParse(await readFile(filePath), {
+  const parsed = await pdfParse(pdfData, {
+    max: MAX_DRHP_PDF_PAGES,
     pagerender: async (rawPage: unknown): Promise<string> => {
       if (!isPdfPageProxy(rawPage)) return "";
       const page = rawPage;
@@ -226,6 +255,26 @@ export async function parseDrhpPdf(
   };
 }
 
+export function assertDrhpPageLimit(pageCount: number): void {
+  if (pageCount > MAX_DRHP_PDF_PAGES) {
+    throw new AppError(
+      "DRHP_PAGE_LIMIT_EXCEEDED",
+      `This PDF has ${pageCount.toLocaleString()} pages. The current DRHP limit is ${MAX_DRHP_PDF_PAGES.toLocaleString()} pages; split the PDF into smaller documents and upload them separately.`,
+      413,
+    );
+  }
+}
+
+export function assertDrhpChunkLimit(chunkCount: number): void {
+  if (chunkCount > MAX_DRHP_CHUNKS) {
+    throw new AppError(
+      "DRHP_CHUNK_LIMIT_EXCEEDED",
+      `This DRHP produces more than ${MAX_DRHP_CHUNKS.toLocaleString()} text chunks. Split the PDF into smaller documents to keep processing time and model usage bounded.`,
+      413,
+    );
+  }
+}
+
 export function chunkDrhpPages(pages: DrhpPdfPage[]): DrhpChunk[] {
   const pagesNeedingOcr = pages
     .filter((page) => page.needsOcr)
@@ -269,7 +318,11 @@ export function chunkDrhpPages(pages: DrhpPdfPage[]): DrhpChunk[] {
     flush();
 
     for (const section of sections) {
-      for (const chunk of splitIntoChunks(section.text)) {
+      for (const chunk of splitIntoChunks(
+        section.text,
+        DRHP_CHUNK_MAX_CHARACTERS,
+        DRHP_CHUNK_OVERLAP_CHARACTERS,
+      )) {
         chunks.push({
           ...chunk,
           chunkIndex: chunks.length,
@@ -279,6 +332,7 @@ export function chunkDrhpPages(pages: DrhpPdfPage[]): DrhpChunk[] {
             ? { printedPageNumber: page.printedPageNumber }
             : {}),
         });
+        assertDrhpChunkLimit(chunks.length);
       }
     }
   }
